@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 
 const API_URL = import.meta.env.VITE_API_URL;
 
@@ -12,8 +12,22 @@ const ProctorDashboard = () => {
   const [stats, setStats] = useState({ activeStudents: 0, totalViolations: 0, criticalThreats: 0 });
   const [liveFeeds, setLiveFeeds] = useState([]);
   const [auditLogs, setAuditLogs] = useState([]);
-  const [searchTerm, setSearchTerm] = useState("");
+  const [recordLookup, setRecordLookup] = useState("");
+  const [recordLookupLoading, setRecordLookupLoading] = useState(false);
+  const [recordLookupError, setRecordLookupError] = useState("");
+  const [recordLookupResult, setRecordLookupResult] = useState(null);
   const [wsConnected, setWsConnected] = useState(false);
+
+  const clearDashboardState = () => {
+    setStats({ activeStudents: 0, totalViolations: 0, criticalThreats: 0 });
+    setLiveFeeds([]);
+    setAuditLogs([]);
+    setRecordLookup("");
+    setRecordLookupLoading(false);
+    setRecordLookupError("");
+    setRecordLookupResult(null);
+    setWsConnected(false);
+  };
 
   // --- NEW: DYNAMIC TAB TITLE & FAVICON IDENTITY INJECTION ---
   useEffect(() => {
@@ -27,8 +41,8 @@ const ProctorDashboard = () => {
       link.rel = 'icon';
       document.getElementsByTagName('head')[0].appendChild(link);
     }
-    // Utilizing a secure shield icon from a standard web vector cache
-    link.href = "https://img.icons8.com/fluency/48/shield-with-crown.png";
+      link.type = 'image/svg+xml';
+      link.href = "/proctor-favicon.svg?v=1";
 
     // Restore standard defaults when the component unmounts
     return () => {
@@ -68,7 +82,13 @@ const ProctorDashboard = () => {
           }
 
           const accumulatedViolations = feeds.reduce(
-            (acc, curr) => acc + (curr.tabs || 0) + (curr.phones || 0) + (curr.absence || 0), 0
+            (acc, curr) => acc
+              + (curr.tabs || 0)
+              + (curr.phones || 0)
+              + (curr.materials || 0)
+              + (curr.multiple_faces || 0)
+              + (curr.identity_swap_alerts || 0),
+            0
           );
           const totalCriticals = feeds.filter(f => f.status === "CRITICAL").length;
 
@@ -77,6 +97,9 @@ const ProctorDashboard = () => {
             totalViolations: accumulatedViolations,
             criticalThreats: totalCriticals
           });
+        }
+        else if (payload.type === "TELEMETRY_RESET") {
+          clearDashboardState();
         }
         else if (payload.type === "INCIDENT_VIDEO_LOG") {
           setAuditLogs(prev => [payload.log, ...prev]);
@@ -112,12 +135,66 @@ const ProctorDashboard = () => {
       
       if (res.ok && data.token) {
         sessionStorage.setItem("proctor_token", data.token);
+        setLoading(true);
         setIsAuthenticated(true);
       } else {
         setLoginError(data.detail || "Authentication validation failure.");
       }
-    } catch (err) {
+    } catch {
       setLoginError("Failed to establish handshake verification with server.");
+    }
+  };
+
+  const handleLogout = async () => {
+    const token = sessionStorage.getItem("proctor_token");
+
+    if (token) {
+      const payload = new FormData();
+      payload.append("token", token);
+
+      try {
+        await fetch(`${API_URL}/api/proctor/logout`, {
+          method: 'POST',
+          body: payload
+        });
+      } catch {
+        // Even if remote logout fails, client state must be cleared immediately.
+        console.error("Proctor logout reset call failed.");
+      }
+    }
+
+    sessionStorage.removeItem("proctor_token");
+    clearDashboardState();
+    setLoading(true);
+    setIsAuthenticated(false);
+  };
+
+  const handleRecordLookup = async (e) => {
+    e.preventDefault();
+    const matric = recordLookup.trim();
+    if (!matric) {
+      setRecordLookupError("Enter a matric number to search.");
+      return;
+    }
+
+    setRecordLookupLoading(true);
+    setRecordLookupError("");
+    setRecordLookupResult(null);
+
+    try {
+      const searchParams = new URLSearchParams({ matric_number: matric });
+      const res = await fetch(`${API_URL}/api/proctor/search?${searchParams.toString()}`);
+      const data = await res.json();
+
+      if (!res.ok) {
+        setRecordLookupError(data.detail || "Lookup failed.");
+      } else {
+        setRecordLookupResult(data);
+      }
+    } catch {
+      setRecordLookupError("Could not reach the record lookup service.");
+    } finally {
+      setRecordLookupLoading(false);
     }
   };
 
@@ -127,10 +204,7 @@ const ProctorDashboard = () => {
     return "#ef4444"; 
   };
 
-  const filteredFeeds = liveFeeds.filter(feed => 
-    (feed.name && feed.name.toLowerCase().includes(searchTerm.toLowerCase())) || 
-    (feed.matric && feed.matric.toLowerCase().includes(searchTerm.toLowerCase()))
-  );
+  const filteredFeeds = liveFeeds;
 
   // --- ADMINISTRATIVE LOGIN GATING GATE ---
   if (!isAuthenticated) {
@@ -185,14 +259,93 @@ const ProctorDashboard = () => {
           </div>
           <p style={{ margin: '5px 0 0 0', color: '#94a3b8', fontSize: '14px' }}>Real-time computer vision monitoring & multi-agent telemetry pipeline.</p>
         </div>
-        <input 
-          type="text" 
-          placeholder="Search Candidate Name or Matric..." 
-          value={searchTerm}
-          onChange={(e) => setSearchTerm(e.target.value)}
-          style={{ padding: '12px 20px', width: '320px', backgroundColor: '#1e293b', border: '1px solid #334155', borderRadius: '8px', color: 'white', fontSize: '14px', outline: 'none' }}
-        />
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+          <form onSubmit={handleRecordLookup} style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <input
+              type="text"
+              placeholder="Search matric for incident records"
+              value={recordLookup}
+              onChange={(e) => setRecordLookup(e.target.value)}
+              style={{ padding: '12px 16px', width: '320px', backgroundColor: '#1e293b', border: '1px solid #334155', borderRadius: '8px', color: 'white', fontSize: '14px', outline: 'none' }}
+            />
+            <button
+              type="submit"
+              disabled={recordLookupLoading}
+              style={{ padding: '12px 14px', backgroundColor: '#2563eb', color: 'white', border: 'none', borderRadius: '8px', fontWeight: '700', cursor: 'pointer', fontSize: '13px', opacity: recordLookupLoading ? 0.7 : 1 }}
+            >
+              {recordLookupLoading ? 'Searching...' : 'Search'}
+            </button>
+          </form>
+          <button
+            onClick={handleLogout}
+            style={{
+              padding: '12px 16px',
+              backgroundColor: '#ef444415',
+              color: '#f87171',
+              border: '1px solid #ef444440',
+              borderRadius: '8px',
+              fontWeight: '700',
+              cursor: 'pointer',
+              fontSize: '13px'
+            }}
+          >
+            Sign Out
+          </button>
+        </div>
       </header>
+
+      {(recordLookupError || recordLookupResult) && (
+        <section style={{ backgroundColor: '#111827', border: '1px solid #334155', borderRadius: '12px', padding: '20px', marginBottom: '30px' }}>
+          {recordLookupError && (
+            <div style={{ marginBottom: recordLookupResult ? '16px' : 0, color: '#fca5a5', backgroundColor: '#ef444415', border: '1px solid #ef444440', borderRadius: '8px', padding: '12px 14px', fontSize: '14px', fontWeight: '600' }}>
+              {recordLookupError}
+            </div>
+          )}
+
+          {recordLookupResult && (
+            <div style={{ display: 'grid', gridTemplateColumns: '220px 1fr', gap: '20px', alignItems: 'start' }}>
+              <div style={{ border: '1px solid #334155', borderRadius: '12px', overflow: 'hidden', backgroundColor: '#0f172a' }}>
+                <img
+                  src={recordLookupResult.student.profile_image_url
+                    ? (recordLookupResult.student.profile_image_url.startsWith('http')
+                        ? recordLookupResult.student.profile_image_url
+                        : `${API_URL}${recordLookupResult.student.profile_image_url}`)
+                    : 'https://via.placeholder.com/220x240?text=No+Photo'}
+                  alt="Student profile"
+                  style={{ width: '100%', height: '240px', objectFit: 'cover', display: 'block' }}
+                />
+              </div>
+
+              <div>
+                <h3 style={{ margin: '0 0 8px 0', fontSize: '20px', color: '#f8fafc' }}>{recordLookupResult.student.full_name}</h3>
+                <p style={{ margin: '0 0 14px 0', color: '#94a3b8', fontSize: '14px' }}>Matric: <strong style={{ color: '#3b82f6' }}>{recordLookupResult.student.matric_number}</strong></p>
+                <p style={{ margin: '0 0 18px 0', color: '#cbd5e1', fontSize: '14px' }}>
+                  High-alert incident videos: <strong style={{ color: recordLookupResult.incident_count > 0 ? '#f59e0b' : '#10b981' }}>{recordLookupResult.incident_count}</strong>
+                </p>
+
+                {recordLookupResult.incident_count === 0 ? (
+                  <div style={{ padding: '14px', borderRadius: '8px', backgroundColor: '#0f172a', border: '1px solid #1f2937', color: '#94a3b8', fontSize: '14px' }}>
+                    No video-backed high-alert records were found for this student.
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                    {recordLookupResult.incident_videos.map((incident) => (
+                      <div key={incident.id} style={{ padding: '14px', borderRadius: '8px', backgroundColor: '#0f172a', border: '1px solid #1f2937' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', marginBottom: '8px' }}>
+                          <strong style={{ color: '#f8fafc', fontSize: '14px' }}>{incident.violation_type}</strong>
+                          <span style={{ color: '#64748b', fontSize: '12px' }}>{incident.created_at}</span>
+                        </div>
+                        <p style={{ margin: '0 0 8px 0', color: '#94a3b8', fontSize: '12px' }}>Exam: {incident.exam_code || 'N/A'}</p>
+                        <video src={`${API_URL}${incident.evidence_url || incident.video_url}`} controls style={{ width: '100%', borderRadius: '8px', border: '1px solid #334155' }} />
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </section>
+      )}
 
       {/* METRICS STATS CARDS GRID */}
       <section style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '25px', marginBottom: '40px' }}>
@@ -244,8 +397,12 @@ const ProctorDashboard = () => {
                     <p style={{ margin: 0, fontWeight: '800', color: student.phones > 0 ? '#ef4444' : '#f8fafc', fontSize: '15px' }}>{student.phones || 0}</p>
                   </div>
                   <div>
-                    <span style={{ color: '#64748b', display: 'block', marginBottom: '4px' }}>Absences</span>
-                    <p style={{ margin: 0, fontWeight: '800', color: student.absence > 0 ? '#ef4444' : '#f8fafc', fontSize: '15px' }}>{student.absence || 0}</p>
+                    <span style={{ color: '#64748b', display: 'block', marginBottom: '4px' }}>Materials</span>
+                    <p style={{ margin: 0, fontWeight: '800', color: student.materials > 0 ? '#ef4444' : '#f8fafc', fontSize: '15px' }}>{student.materials || 0}</p>
+                  </div>
+                  <div>
+                    <span style={{ color: '#64748b', display: 'block', marginBottom: '4px' }}>Examiner Switch</span>
+                    <p style={{ margin: 0, fontWeight: '800', color: student.identity_swap_alerts > 0 ? '#ef4444' : '#f8fafc', fontSize: '15px' }}>{student.identity_swap_alerts || 0}</p>
                   </div>
                 </div>
 

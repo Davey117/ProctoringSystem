@@ -1,10 +1,11 @@
-import React, { useEffect } from 'react';
+import { useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Link, useLocation } from 'react-router-dom';
 import Register from './Register';
 import Login from './Login';
 import ProctorDashboard from './ProctorDashboard';
 import StudentDashboard from './StudentDashboard';
 import ExamWorkspace from './ExamWorkspace';
+import LecturerDashboard from './LecturerDashboard';
 
 // This handles updating the favicon and title text dynamically across all pages
 function TabIdentityManager() {
@@ -16,12 +17,11 @@ function TabIdentityManager() {
     if (!link) {
       link = document.createElement('link');
       link.rel = 'icon';
-      link.type = 'image/png';
+      link.type = 'image/svg+xml';
       document.getElementsByTagName('head')[0].appendChild(link);
     }
-    
-    // Using a vibrant, production-ready shield icon URL
-    link.href = "https://img.icons8.com/fluency/48/shield-with-crown.png";
+
+    link.href = "/proctor-favicon.svg?v=1";
 
     // 2. DYNAMIC TITLE SETTING: Match page title text to current path
     const path = location.pathname;
@@ -33,6 +33,8 @@ function TabIdentityManager() {
       document.title = "🔒 SECURE EXAM WORKSPACE ACTIVE";
     } else if (path === '/dashboard' || path === '/StudentDashboard') {
       document.title = "Candidate Dashboard Terminal";
+    } else if (path === '/lecturer') {
+      document.title = "Lecturer Control Center";
     } else if (path === '/proctor') {
       document.title = "Supervisor Overwatch Console";
     } else {
@@ -172,6 +174,8 @@ function App() {
         </strong>
         <Link to="/register" style={{ color: '#60a5fa', textDecoration: 'none', fontSize: '14px', fontWeight: '700' }}>Enrollment</Link>
         <Link to="/login" style={{ color: '#34d399', textDecoration: 'none', fontSize: '14px', fontWeight: '700' }}>Student Login</Link>
+        <Link to="/lecturer" style={{ color: '#fbbf24', textDecoration: 'none', fontSize: '14px', fontWeight: '700' }}>Lecturer</Link>
+        <Link to="/proctor" style={{ color: '#f87171', textDecoration: 'none', fontSize: '14px', fontWeight: '700' }}>Proctor</Link>
       </nav>
 
       <Routes>
@@ -180,6 +184,7 @@ function App() {
         <Route path="/register" element={<Register />} />
         <Route path="/login" element={<Login />} />
         <Route path="/proctor" element={<ProctorDashboard />} />
+        <Route path="/lecturer" element={<LecturerDashboard />} />
         <Route path="/exam-workspace/:examId" element={<ExamWorkspace />} />
         <Route path="/dashboard" element={<StudentDashboard />} />
         <Route path="/StudentDashboard" element={<StudentDashboard />} />

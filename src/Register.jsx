@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback } from 'react';
 import Webcam from 'react-webcam';
 
 const API_URL = import.meta.env.VITE_API_URL;
@@ -89,11 +89,15 @@ const Register = () => {
             verified = true; // Gate opens for next challenge
           } else {
             attempts++;
-            if (attempts > 5) setChallenge(`${item.label} (Still adjusting...)`);
+            if ((data.reason || '').toLowerCase().includes('low light')) {
+              setChallenge(`${item.label} (Low light detected - move to a brighter area)`);
+            } else if (attempts > 5) {
+              setChallenge(`${item.label} (Retry with better lighting...)`);
+            }
             await sleep(800); // Prevents thread blocking
           }
-        } catch (e) {
-          console.error("Network hiccup:", e);
+        } catch (error) {
+          console.error("Network hiccup:", error);
           await sleep(2000); // Backoff on error
         }
       }
@@ -140,10 +144,14 @@ const Register = () => {
         setChallenge("🛡️ Secure registration complete! Signature locked.");
         setTimeout(() => window.location.href = "/dashboard", 2500); 
       } else {
-        setError(`Enrollment Failed: ${result.detail || "Biometric extraction error."}`);
+        if ((result.detail || '').toLowerCase().includes('low light')) {
+          setError("Low light detected. Move to a brighter area and try the signup again.");
+        } else {
+          setError(`Enrollment Failed: ${result.detail || "Biometric extraction error."}`);
+        }
         setStep(1);
       }
-    } catch (err) {
+    } catch {
       setError("Network Error: Could not connect to the secure backend server.");
       setStep(1);
     }

@@ -1,11 +1,12 @@
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { PROFILE_IMAGE_FALLBACK, resolveProfileImageUrl } from './profileImage';
 
 const API_URL = import.meta.env.VITE_API_URL;
 
 const StudentDashboard = () => {
   const navigate = useNavigate();
-  const [student, setStudent] = useState({ name: 'Loading...', image: 'https://via.placeholder.com/150', matric: '' });
+  const [student, setStudent] = useState({ name: 'Loading...', image: PROFILE_IMAGE_FALLBACK, matric: '' });
   const [exams, setExams] = useState([]);
   const [loading, setLoading] = useState(true);
   const [systemCheck, setSystemCheck] = useState({ camera: 'Checking...', network: 'Optimal' });
@@ -33,9 +34,7 @@ const StudentDashboard = () => {
         return res.json();
       })
       .then(data => {
-        const determinedImgUrl = data.profile_image_url && data.profile_image_url !== "default_url" 
-          ? (data.profile_image_url.startsWith('http') ? data.profile_image_url : `${API_URL}${data.profile_image_url}`) 
-          : "https://via.placeholder.com/150";
+        const determinedImgUrl = resolveProfileImageUrl(API_URL, data.profile_image_url);
 
         setStudent({ 
           name: data.full_name, 
@@ -49,7 +48,7 @@ const StudentDashboard = () => {
         console.error("Failed to fetch profile cleanly:", err);
         setStudent({ 
           name: "Verified Candidate", 
-          image: "https://via.placeholder.com/150", 
+          image: PROFILE_IMAGE_FALLBACK,
           matric: matric 
         });
         setExams(mockExams);
@@ -134,7 +133,15 @@ const StudentDashboard = () => {
             <p style={{ margin: 0, fontWeight: '700', fontSize: '14px', color: '#f1f5f9' }}>{student.name}</p>
             <p style={{ margin: '2px 0 0 0', fontSize: '12px', color: '#94a3b8', fontWeight: '600' }}>{student.matric}</p>
           </div>
-          <img src={student.image} alt="Profile Node" style={{ width: '40px', height: '40px', borderRadius: '50%', objectFit: 'cover', border: '2px solid #3b82f6', boxShadow: '0 0 8px rgba(59, 130, 246, 0.3)' }} />
+          <img
+            src={student.image}
+            alt="Profile Node"
+            style={{ width: '40px', height: '40px', borderRadius: '50%', objectFit: 'cover', border: '2px solid #3b82f6', boxShadow: '0 0 8px rgba(59, 130, 246, 0.3)' }}
+            onError={(e) => {
+              e.currentTarget.onerror = null;
+              e.currentTarget.src = PROFILE_IMAGE_FALLBACK;
+            }}
+          />
           <button 
             onClick={handleLogout} 
             style={{ 

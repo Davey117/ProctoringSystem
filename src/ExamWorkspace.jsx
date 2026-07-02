@@ -1,8 +1,36 @@
-import React, { useEffect, useState, useRef } from 'react';
+import { useCallback, useEffect, useState, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import Webcam from 'react-webcam';
 
 const API_URL = import.meta.env.VITE_API_URL;
+
+const fallbackQuestions = [
+  {
+    id: 1,
+    text: "Which of the following data mining architectural design approaches extracts significant itemset relationships by constructing a prefix tree structure without utilizing candidate generation passes?",
+    options: ["Apriori Algorithm", "FP-Growth Algorithm", "Eclat Algorithm", "K-Means Clustering"]
+  },
+  {
+    id: 2,
+    text: "In machine learning classification optimization protocols, what primary failure mode occurs when a model fits training data perfectly but fails to generalize to validation pipelines?",
+    options: ["Underfitting", "Data Leakage", "Overfitting", "Gradient Explosion"]
+  },
+  {
+    id: 3,
+    text: "Which of the following distance metrics is mathematically optimized for computing similarity profiles over high-dimensional sparse transactional data frameworks in clustering pipelines?",
+    options: ["Euclidean Distance", "Manhattan Distance", "Jaccard Distance Coefficient", "Minkowski Distance"]
+  },
+  {
+    id: 4,
+    text: "During data pre-processing stages, which strategy explicitly mitigates data dimensionality explosion while maximizing the preservation of directional variance?",
+    options: ["Min-Max Scaling", "Principal Component Analysis (PCA)", "Decimal Scaling", "Z-Score Normalization"]
+  },
+  {
+    id: 5,
+    text: "In hierarchical data clustering frameworks, which linkage protocol calculates similarity vectors based on the absolute maximum distance between any single data point in Cluster A and Cluster B?",
+    options: ["Centroid Linkage", "Average Linkage", "Single Linkage (Minimum)", "Complete Linkage (Maximum)"]
+  }
+];
 
 const ExamWorkspace = () => {
   const { examId } = useParams();
@@ -15,6 +43,7 @@ const ExamWorkspace = () => {
   const screenVideoRef = useRef(null);
   const latestScreenBlobRef = useRef(null); 
   const screenRecorderRef = useRef(null); 
+  const tabSwitchStartedAtRef = useRef(null);
 
   // --- Diagnostic State ---
   const [debugLog, setDebugLog] = useState("Diagnostic engine initialized...");
@@ -24,45 +53,187 @@ const ExamWorkspace = () => {
   const [selectedAnswers, setSelectedAnswers] = useState({});
   const [examSubmitted, setExamSubmitted] = useState(false);
   const [screenShared, setScreenShared] = useState(false);
+  const [examQuestions, setExamQuestions] = useState([]);
+  const [questionsLoading, setQuestionsLoading] = useState(true);
+  const [questionsError, setQuestionsError] = useState("");
 
   // --- Telemetry Violation States ---
   const [violations, setViolations] = useState({ 
     tabSwitches: 0, 
     phoneDetections: 0, 
     materialDetections: 0, 
+    identitySwapDetections: 0,
     absenceDetections: 0, 
     anomalies: [] 
   });
   const [statusMessage, setStatusMessage] = useState("🛡️ Secure Proctor Monitoring Active");
 
-  // HARDENED COURSE MATCHING & EXTENDED QUESTION BANK
-  const mockQuestions = [
-    {
-      id: 1,
-      text: "Which of the following data mining architectural design approaches extracts significant itemset relationships by constructing a prefix tree structure without utilizing candidate generation passes?",
-      options: ["Apriori Algorithm", "FP-Growth Algorithm", "Eclat Algorithm", "K-Means Clustering"]
-    },
-    {
-      id: 2,
-      text: "In machine learning classification optimization protocols, what primary failure mode occurs when a model fits training data perfectly but fails to generalize to validation pipelines?",
-      options: ["Underfitting", "Data Leakage", "Overfitting", "Gradient Explosion"]
-    },
-    {
-      id: 3,
-      text: "Which of the following distance metrics is mathematically optimized for computing similarity profiles over high-dimensional sparse transactional data frameworks in clustering pipelines?",
-      options: ["Euclidean Distance", "Manhattan Distance", "Jaccard Distance Coefficient", "Minkowski Distance"]
-    },
-    {
-      id: 4,
-      text: "During data pre-processing stages, which strategy explicitly mitigates data dimensionality explosion while maximizing the preservation of directional variance?",
-      options: ["Min-Max Scaling", "Principal Component Analysis (PCA)", "Decimal Scaling", "Z-Score Normalization"]
-    },
-    {
-      id: 5,
-      text: "In hierarchical data clustering frameworks, which linkage protocol calculates similarity vectors based on the absolute maximum distance between any single data point in Cluster A and Cluster B?",
-      options: ["Centroid Linkage", "Average Linkage", "Single Linkage (Minimum)", "Complete Linkage (Maximum)"]
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadExamQuestions = async () => {
+      if (!examId) {
+        setExamQuestions([]);
+        setQuestionsError("No exam selected.");
+        setQuestionsLoading(false);
+        return;
+      }
+
+      setQuestionsLoading(true);
+      setQuestionsError("");
+
+      try {
+        const response = await fetch(`${API_URL}/api/exams/${encodeURIComponent(examId)}/questions`);
+        const data = await response.json();
+
+        if (!response.ok) {
+          throw new Error(data.detail || "Unable to load exam questions.");
+        }
+
+        const normalizedQuestions = (data.questions || []).map((question, index) => ({
+          id: question.id || index + 1,
+          text: question.text || question.question_text || question.title || `Question ${index + 1}`,
+          options: Array.isArray(question.options) ? question.options : []
+        }));
+
+        if (!cancelled) {
+          if (normalizedQuestions.length > 0) {
+            setExamQuestions(normalizedQuestions);
+          } else {
+            setExamQuestions([]);
+            setQuestionsError("This exam does not yet have any lecturer-defined questions.");
+          }
+        }
+      } catch (error) {
+        console.error("Failed to load exam questions:", error);
+        if (!cancelled) {
+          setExamQuestions(fallbackQuestions);
+          setQuestionsError("Lecturer question service unavailable. Showing fallback questions for now.");
+        }
+      } finally {
+        if (!cancelled) {
+          setQuestionsLoading(false);
+        }
+      }
+    };
+
+    loadExamQuestions();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [examId]);
+
+  const getCameraRecordingStream = useCallback(() => {
+    return webcamRef.current?.video?.srcObject || webcamRef.current?.stream || null;
+  }, []);
+
+  const getScreenRecordingStream = useCallback(() => {
+    return screenVideoRef.current?.srcObject || null;
+  }, []);
+
+  const captureIncidentClip = useCallback(async (violationType, matric) => {
+    if (isRecordingRef.current) return;
+
+    const stream = getCameraRecordingStream();
+    if (!stream) return;
+
+    try {
+      const options = MediaRecorder.isTypeSupported('video/webm') ? { mimeType: 'video/webm' } : {};
+      const mediaRecorder = new MediaRecorder(stream, options);
+      mediaRecorderRef.current = mediaRecorder;
+      let chunks = [];
+
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) chunks.push(event.data);
+      };
+
+      mediaRecorder.onstop = async () => {
+        isRecordingRef.current = false;
+        if (!chunks.length) {
+          setDebugLog(`No video chunks captured for ${violationType}.`);
+          return;
+        }
+
+        const blob = new Blob(chunks, { type: options.mimeType || 'video/mp4' });
+        if (!blob.size) {
+          setDebugLog(`Empty evidence clip for ${violationType}.`);
+          return;
+        }
+
+        const payload = new FormData();
+        payload.append("username", matric);
+        payload.append("violation_type", violationType);
+        payload.append("exam_id", examId || "");
+        payload.append("file", new File([blob], `incident_${Date.now()}.webm`, { type: blob.type }));
+
+        try {
+          await fetch(`${API_URL}/api/upload_incident_video`, { method: 'POST', body: payload });
+          setDebugLog(`✅ Uploaded ${violationType} evidence clip.`);
+        } catch (error) {
+          console.error("Video submission error:", error);
+          setDebugLog(`❌ Failed to upload ${violationType} evidence clip.`);
+        }
+      };
+
+      mediaRecorder.start(250);
+      isRecordingRef.current = true;
+
+      setTimeout(() => {
+        if (mediaRecorderRef.current && mediaRecorderRef.current.state === "recording") {
+          mediaRecorderRef.current.stop();
+        }
+      }, 5000);
+    } catch (error) {
+      console.error("Recorder error:", error);
+      isRecordingRef.current = false;
     }
-  ];
+  }, [getCameraRecordingStream, examId]);
+
+  const analyzeWorkspaceEnvironment = useCallback(async (matricNumber) => {
+    if (!webcamRef.current) return;
+
+    const base64Frame = webcamRef.current.getScreenshot();
+    if (!base64Frame) return;
+
+    try {
+      const blob = await (await fetch(base64Frame)).blob();
+      const payload = new FormData();
+      payload.append("username", matricNumber);
+      payload.append("exam_id", examId);
+      payload.append("file", new File([blob], "telemetry_frame.jpg", { type: "image/jpeg" }));
+
+      const response = await fetch(`${API_URL}/api/proctor_telemetry`, { method: 'POST', body: payload });
+      const data = await response.json();
+
+      if (response.ok && data.violations && data.violations.length > 0) {
+        const hasPhone = data.violations.some(v => v.toLowerCase().includes("phone"));
+        const hasMaterial = data.violations.some(v => v.toLowerCase().includes("material") || v.toLowerCase().includes("book"));
+        const hasIdentitySwap = data.violations.some(v => v.toLowerCase().includes("identity"));
+        const hasAbsence = data.violations.some(v => v.toLowerCase().includes("absence") || v.toLowerCase().includes("no candidate"));
+
+        if (hasPhone || hasMaterial || hasIdentitySwap) {
+          const evidenceType = hasIdentitySwap ? "Identity Continuity Risk" : data.violations[0];
+          captureIncidentClip(evidenceType, matricNumber);
+        }
+
+        setViolations(prev => ({
+          ...prev,
+          phoneDetections: hasPhone ? (prev.phoneDetections || 0) + 1 : (prev.phoneDetections || 0),
+          materialDetections: hasMaterial ? (prev.materialDetections || 0) + 1 : (prev.materialDetections || 0),
+          identitySwapDetections: hasIdentitySwap ? (prev.identitySwapDetections || 0) + 1 : (prev.identitySwapDetections || 0),
+          absenceDetections: hasAbsence ? (prev.absenceDetections || 0) + 1 : (prev.absenceDetections || 0),
+          anomalies: [...(prev.anomalies || []), ...data.violations]
+        }));
+
+        setStatusMessage(`⚠️ CRITICAL: ${data.violations[0]}!`);
+      } else if (response.ok) {
+        setStatusMessage("🛡️ Secure Proctor Monitoring Active");
+      }
+    } catch (error) {
+      console.error("Telemetry link error:", error);
+    }
+  }, [captureIncidentClip, examId]);
 
   const enableScreenTracking = async () => {
     try {
@@ -162,7 +333,9 @@ const ExamWorkspace = () => {
         fetch(`${API_URL}/api/log_tab_switch`, { method: 'POST', body: payload })
           .catch(err => console.error("Network Error on snapshot:", err));
 
-        const stream = screenVideoRef.current?.srcObject;
+        tabSwitchStartedAtRef.current = Date.now();
+
+        const stream = getScreenRecordingStream();
         if (stream) {
           try {
             const options = MediaRecorder.isTypeSupported('video/webm') ? { mimeType: 'video/webm' } : {};
@@ -175,20 +348,36 @@ const ExamWorkspace = () => {
             };
 
             recorder.onstop = async () => {
+              if (!chunks.length) {
+                setDebugLog("❌ Tab excursion video had no chunks.");
+                return;
+              }
+
               const blob = new Blob(chunks, { type: options.mimeType || 'video/mp4' });
+              if (!blob.size) {
+                setDebugLog("❌ Tab excursion video blob was empty.");
+                return;
+              }
+
+              const startedAt = tabSwitchStartedAtRef.current;
+              const durationSeconds = startedAt ? Math.max(1, Math.round((Date.now() - startedAt) / 1000)) : 1;
+
               const videoPayload = new FormData();
               videoPayload.append("username", matric);
-              videoPayload.append("violation_type", "Prolonged Tab Excursion");
+              videoPayload.append("violation_type", `Tab Switch Focus Loss (${durationSeconds}s)`);
+              videoPayload.append("exam_id", examId || "");
               videoPayload.append("file", new File([blob], `excursion_${Date.now()}.webm`, { type: blob.type }));
 
               fetch(`${API_URL}/api/upload_incident_video`, { method: 'POST', body: videoPayload })
                 .then(() => setDebugLog("✅ Excursion video evidence transmitted successfully."))
-                .catch(err => setDebugLog(`❌ Failed to upload excursion video: ${err.message}`));
+                .catch(() => setDebugLog("❌ Failed to upload excursion video."));
+
+              tabSwitchStartedAtRef.current = null;
             };
 
-            recorder.start();
+            recorder.start(250);
             diagnosticMsg += `Background surveillance recording initialized...`;
-          } catch (err) {
+          } catch {
             diagnosticMsg += `Failed to start excursion recorder.`;
           }
         }
@@ -211,98 +400,14 @@ const ExamWorkspace = () => {
     }, 2500);
 
     return () => {
+      if (screenRecorderRef.current && screenRecorderRef.current.state === "recording") {
+        screenRecorderRef.current.stop();
+      }
+
       document.removeEventListener("visibilitychange", handleVisibilityChange);
       clearInterval(intervalId);
     };
-  }, [navigate, examId]);
-
-  const captureIncidentClip = (violationType, matric) => {
-    if (isRecordingRef.current) return; 
-    
-    const stream = webcamRef.current?.stream || webcamRef.current?.video?.srcObject;
-    if (!stream) return;
-
-    try {
-      const options = MediaRecorder.isTypeSupported('video/webm') ? { mimeType: 'video/webm' } : {};
-      const mediaRecorder = new MediaRecorder(stream, options);
-      mediaRecorderRef.current = mediaRecorder;
-      let chunks = [];
-
-      mediaRecorder.ondataavailable = (e) => {
-        if (e.data.size > 0) chunks.push(e.data);
-      };
-
-      mediaRecorder.onstop = async () => {
-        isRecordingRef.current = false;
-        const blob = new Blob(chunks, { type: options.mimeType || 'video/mp4' });
-        const payload = new FormData();
-        payload.append("username", matric);
-        payload.append("violation_type", violationType);
-        payload.append("file", new File([blob], `incident_${Date.now()}.webm`, { type: blob.type }));
-
-        try {
-          await fetch(`${API_URL}/api/upload_incident_video`, { method: 'POST', body: payload });
-        } catch (err) {
-          console.error("Video submission error:", err);
-        }
-      };
-
-      mediaRecorder.start();
-      isRecordingRef.current = true;
-
-      setTimeout(() => {
-        if (mediaRecorderRef.current && mediaRecorderRef.current.state === "recording") {
-          mediaRecorderRef.current.stop();
-        }
-      }, 5000);
-
-    } catch (err) {
-      console.error("Recorder error:", err);
-      isRecordingRef.current = false;
-    }
-  };
-
-  const analyzeWorkspaceEnvironment = async (matricNumber) => {
-    if (!webcamRef.current) return;
-    
-    const base64Frame = webcamRef.current.getScreenshot();
-    if (!base64Frame) return;
-
-    try {
-      const blob = await (await fetch(base64Frame)).blob();
-      const payload = new FormData();
-      payload.append("username", matricNumber);
-      payload.append("exam_id", examId);
-      payload.append("file", new File([blob], "telemetry_frame.jpg", { type: "image/jpeg" }));
-
-      const response = await fetch(`${API_URL}/api/proctor_telemetry`, { method: 'POST', body: payload });
-      const data = await response.json();
-      
-      if (response.ok && data.violations && data.violations.length > 0) {
-        const hasPhone = data.violations.some(v => v.toLowerCase().includes("phone"));
-        const hasMaterial = data.violations.some(v => v.toLowerCase().includes("material") || v.toLowerCase().includes("book"));
-        const hasAbsence = data.violations.some(v => v.toLowerCase().includes("absence") || v.toLowerCase().includes("no candidate"));
-
-        if (hasPhone || hasMaterial) {
-          captureIncidentClip(data.violations[0], matricNumber);
-        }
-
-        setViolations(prev => ({
-          ...prev,
-          phoneDetections: hasPhone ? (prev.phoneDetections || 0) + 1 : (prev.phoneDetections || 0),
-          materialDetections: hasMaterial ? (prev.materialDetections || 0) + 1 : (prev.materialDetections || 0),
-          absenceDetections: hasAbsence ? (prev.absenceDetections || 0) + 1 : (prev.absenceDetections || 0),
-          anomalies: [...(prev.anomalies || []), ...data.violations]
-        }));
-        
-        setStatusMessage(`⚠️ CRITICAL: ${data.violations[0]}!`);
-      } else if (response.ok) {
-        setStatusMessage("🛡️ Secure Proctor Monitoring Active");
-      }
-    } catch (err) {
-      console.error("Telemetry link error:", err);
-    }
-  };
+    }, [navigate, examId, analyzeWorkspaceEnvironment, getScreenRecordingStream]);
 
   const handleOptionSelect = (questionId, option) => {
     setSelectedAnswers({ ...selectedAnswers, [questionId]: option });
@@ -327,6 +432,7 @@ const ExamWorkspace = () => {
               <p style={{ margin: 0 }}>🛑 Navigation Exits Count: <strong style={{color: violations.tabSwitches > 0 ? '#f87171' : '#34d399'}}>{violations.tabSwitches} incidents</strong></p>
               <p style={{ margin: 0 }}>📱 Persistent Phone Flags: <strong style={{color: violations.phoneDetections > 0 ? '#f87171' : '#34d399'}}>{violations.phoneDetections} frames</strong></p>
               <p style={{ margin: 0 }}>📚 Material/Book Flags: <strong style={{color: violations.materialDetections > 0 ? '#f87171' : '#34d399'}}>{violations.materialDetections} frames</strong></p>
+              <p style={{ margin: 0 }}>🧬 Identity Continuity Flags: <strong style={{color: violations.identitySwapDetections > 0 ? '#f87171' : '#34d399'}}>{violations.identitySwapDetections} frames</strong></p>
               <p style={{ margin: 0 }}>👤 Candidate Absence Flags: <strong style={{color: violations.absenceDetections > 0 ? '#f87171' : '#34d399'}}>{violations.absenceDetections} frames</strong></p>
             </div>
           </div>
@@ -356,7 +462,8 @@ const ExamWorkspace = () => {
     );
   }
 
-  const currentQuestion = mockQuestions[currentQuestionIndex];
+  const currentQuestion = examQuestions[currentQuestionIndex] || null;
+  const totalQuestions = examQuestions.length;
 
   return (
     <div style={{ minHeight: '100vh', backgroundColor: '#0f172a', fontFamily: 'system-ui, -apple-system, sans-serif', display: 'grid', gridTemplateColumns: '3fr 1fr', color: '#f1f5f9' }}>
@@ -369,40 +476,62 @@ const ExamWorkspace = () => {
               📝 SYSTEM LAB WORKSPACE: {examId === "CSC420" ? "CSC 420 (Data Mining & Warehousing)" : examId}
             </span>
             <span style={{ fontSize: '13px', fontWeight: '700', color: '#94a3b8', backgroundColor: '#0f172a', padding: '4px 10px', borderRadius: '12px', border: '1px solid #334155' }}>
-              Question {currentQuestionIndex + 1} of {mockQuestions.length}
+              Question {totalQuestions > 0 ? currentQuestionIndex + 1 : 0} of {totalQuestions}
             </span>
           </div>
 
-          <h3 style={{ color: 'white', lineHeight: '1.5', marginBottom: '30px', fontSize: '18px', fontWeight: '600' }}>{currentQuestion.text}</h3>
-          
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-            {currentQuestion.options.map((option, idx) => {
-              const isSelected = selectedAnswers[currentQuestion.id] === option;
-              return (
-                <label key={idx} style={{ 
-                  display: 'flex', 
-                  alignItems: 'center', 
-                  gap: '14px', 
-                  padding: '18px 20px', 
-                  border: isSelected ? '2px solid #38bdf8' : '1px solid #334155', 
-                  borderRadius: '8px', 
-                  backgroundColor: isSelected ? '#38bdf80a' : '#0f172a',
-                  cursor: 'pointer',
-                  transition: 'all 0.15s ease',
-                  boxSizing: 'border-box'
-                }}>
-                  <input 
-                    type="radio" 
-                    name={`question-${currentQuestion.id}`} 
-                    checked={isSelected}
-                    onChange={() => handleOptionSelect(currentQuestion.id, option)}
-                    style={{ transform: 'scale(1.25)', accentColor: '#38bdf8' }}
-                  />
-                  <span style={{ fontSize: '15px', color: isSelected ? 'white' : '#cbd5e1', fontWeight: isSelected ? '700' : '500' }}>{option}</span>
-                </label>
-              );
-            })}
-          </div>
+          {questionsLoading && (
+            <div style={{ padding: '20px', borderRadius: '10px', backgroundColor: '#0f172a', border: '1px solid #334155', color: '#94a3b8', fontSize: '14px' }}>
+              Loading lecturer-defined questions...
+            </div>
+          )}
+
+          {!questionsLoading && questionsError && (
+            <div style={{ padding: '16px 18px', borderRadius: '10px', backgroundColor: '#1f2937', border: '1px solid #334155', color: '#fbbf24', fontSize: '13px', marginBottom: '18px', lineHeight: '1.5' }}>
+              {questionsError}
+            </div>
+          )}
+
+          {!questionsLoading && currentQuestion && (
+            <>
+              <h3 style={{ color: 'white', lineHeight: '1.5', marginBottom: '30px', fontSize: '18px', fontWeight: '600' }}>{currentQuestion.text}</h3>
+              
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                {(currentQuestion.options || []).map((option, idx) => {
+                  const isSelected = selectedAnswers[currentQuestion.id] === option;
+                  return (
+                    <label key={idx} style={{ 
+                      display: 'flex', 
+                      alignItems: 'center', 
+                      gap: '14px', 
+                      padding: '18px 20px', 
+                      border: isSelected ? '2px solid #38bdf8' : '1px solid #334155', 
+                      borderRadius: '8px', 
+                      backgroundColor: isSelected ? '#38bdf80a' : '#0f172a',
+                      cursor: 'pointer',
+                      transition: 'all 0.15s ease',
+                      boxSizing: 'border-box'
+                    }}>
+                      <input 
+                        type="radio" 
+                        name={`question-${currentQuestion.id}`} 
+                        checked={isSelected}
+                        onChange={() => handleOptionSelect(currentQuestion.id, option)}
+                        style={{ transform: 'scale(1.25)', accentColor: '#38bdf8' }}
+                      />
+                      <span style={{ fontSize: '15px', color: isSelected ? 'white' : '#cbd5e1', fontWeight: isSelected ? '700' : '500' }}>{option}</span>
+                    </label>
+                  );
+                })}
+              </div>
+            </>
+          )}
+
+          {!questionsLoading && !currentQuestion && (
+            <div style={{ padding: '24px', borderRadius: '10px', backgroundColor: '#0f172a', border: '1px dashed #334155', color: '#cbd5e1', lineHeight: '1.6' }}>
+              No questions are configured for this exam yet. Ask the lecturer to add questions, then reload this workspace.
+            </div>
+          )}
         </div>
 
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '10px' }}>
@@ -414,9 +543,10 @@ const ExamWorkspace = () => {
             Previous Node
           </button>
           
-          {currentQuestionIndex < mockQuestions.length - 1 ? (
+          {currentQuestionIndex < totalQuestions - 1 ? (
             <button 
               onClick={() => setCurrentQuestionIndex(prev => prev + 1)}
+              disabled={questionsLoading || !currentQuestion || currentQuestionIndex >= totalQuestions - 1}
               style={{ padding: '12px 28px', backgroundColor: '#2563eb', color: 'white', border: 'none', borderRadius: '6px', fontWeight: '700', cursor: 'pointer', fontSize: '14px', boxShadow: '0 4px 12px rgba(37,99,235,0.2)' }}
             >
               Next Question
@@ -424,6 +554,7 @@ const ExamWorkspace = () => {
           ) : (
             <button 
               onClick={handleFinishExam}
+              disabled={questionsLoading || !currentQuestion}
               style={{ padding: '12px 28px', backgroundColor: '#10b981', color: 'white', border: 'none', borderRadius: '6px', fontWeight: '700', cursor: 'pointer', fontSize: '14px', boxShadow: '0 4px 12px rgba(16,185,129,0.2)' }}
             >
               Submit Response Scripts

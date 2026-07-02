@@ -1,6 +1,7 @@
-import React, { useState, useRef } from 'react';
+import { useState, useRef } from 'react';
 import Webcam from 'react-webcam';
 import { useNavigate } from 'react-router-dom';
+import { PROFILE_IMAGE_FALLBACK, resolveProfileImageUrl } from './profileImage';
 
 const API_URL = import.meta.env.VITE_API_URL;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -33,7 +34,10 @@ const Login = () => {
       const result = await response.json();
 
       if (response.ok) {
-        setStudentInfo(result); 
+        setStudentInfo({
+          ...result,
+          profile_image_resolved: resolveProfileImageUrl(API_URL, result.profile_url)
+        }); 
         setStep('LIVENESS'); 
         // Trigger the challenge sequence immediately after camera mounts
         setTimeout(() => runLoginLivenessChallenges(), 1000);
@@ -84,11 +88,15 @@ const Login = () => {
             verified = true; // Break loop, move to next challenge
           } else {
             attempts++;
-            if (attempts > 6) setChallengeLabel(`${item.label} (Keep adjusting position...)`);
+            if ((data.reason || '').toLowerCase().includes('low light')) {
+              setChallengeLabel(`${item.label} (Low light detected - move to a brighter area)`);
+            } else if (attempts > 6) {
+              setChallengeLabel(`${item.label} (Retry with better lighting...)`);
+            }
             await sleep(600); // Polling baseline frequency
           }
-        } catch (e) {
-          console.error("Liveness network hiccup:", e);
+            } catch (error) {
+              console.error("Liveness network hiccup:", error);
           await sleep(1500);
         }
       }
@@ -131,14 +139,18 @@ const Login = () => {
           navigate('/dashboard'); 
         }, 2500);
       } else {
-        setError(result.detail || "Biometric matching failed against database profile Matrix.");
+        if ((result.detail || '').toLowerCase().includes('low light')) {
+          setError("Low light detected. Move to a brighter area and retry the login.");
+        } else {
+          setError(result.detail || "Biometric matching failed against database profile Matrix.");
+        }
         setStep('LIVENESS');
         // Restart challenges if verification fails
         setTimeout(() => runLoginLivenessChallenges(), 1500);
       }
-    } catch (err) {
-      console.error("Biometric execution exception:", err);
-      setError(`Biometric Pipeline Error: ${err.message}`);
+    } catch (error) {
+      console.error("Biometric execution exception:", error);
+      setError(`Biometric Pipeline Error: ${error.message}`);
       setStep('LIVENESS');
     }
   };
@@ -298,9 +310,13 @@ const Login = () => {
               </h3>
               <div style={{ width: '70px', height: '70px', borderRadius: '50%', overflow: 'hidden', border: '2px solid #3b82f6', marginTop: '5px', boxShadow: '0 0 12px rgba(59, 130, 246, 0.2)' }}>
                 <img 
-                  src={studentInfo?.profile_url && studentInfo.profile_url !== "default_url" ? (studentInfo.profile_url.startsWith('http') ? studentInfo.profile_url : `${API_URL}${studentInfo.profile_url}`) : "https://via.placeholder.com/150"} 
+                  src={studentInfo?.profile_image_resolved || PROFILE_IMAGE_FALLBACK}
                   alt="Reference Master" 
-                  style={{ width: '100%', height: '100%', objectFit: 'cover' }} 
+                  style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                  onError={(e) => {
+                    e.currentTarget.onerror = null;
+                    e.currentTarget.src = PROFILE_IMAGE_FALLBACK;
+                  }}
                 />
               </div>
             </div>
